@@ -1,61 +1,35 @@
-# Standalone happy-server: single container, no external dependencies
-# Uses PGlite (embedded Postgres), local filesystem storage, no Redis
+FROM node:20
 
-# Stage 1: install dependencies
-FROM node:20 AS deps
+RUN apt-get update && apt-get install -y python3 ffmpeg make g++ && rm -rf /var/lib/apt/lists/*
+RUN corepack enable
 
-RUN apt-get update && apt-get install -y python3 make g++ build-essential && rm -rf /var/lib/apt/lists/*
-RUN corepack enable && corepack prepare pnpm@10.11.0 --activate
+WORKDIR /app
 
-WORKDIR /repo
-
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY scripts ./scripts
 COPY patches ./patches
-
-RUN mkdir -p packages/happy-app packages/happy-server packages/happy-cli packages/happy-agent packages/happy-wire
-
-COPY packages/happy-app/package.json packages/happy-app/
-COPY packages/happy-server/package.json packages/happy-server/
-COPY packages/happy-cli/package.json packages/happy-cli/
-COPY packages/happy-agent/package.json packages/happy-agent/
-COPY packages/happy-wire/package.json packages/happy-wire/
-
-# Workspace postinstall requirements
-COPY packages/happy-app/patches packages/happy-app/patches
+COPY packages/happy-server/package.json packages/happy-server/package.json
 COPY packages/happy-server/prisma packages/happy-server/prisma
-COPY packages/happy-cli/scripts packages/happy-cli/scripts
-COPY packages/happy-cli/tools packages/happy-cli/tools
+COPY packages/happy-wire/package.json packages/happy-wire/package.json
 
-RUN SKIP_HAPPY_WIRE_BUILD=1 pnpm install --frozen-lockfile
+ENV SKIP_HAPPY_WIRE_BUILD=1
+RUN pnpm install --frozen-lockfile --filter happy-server...
 
-# Stage 2: copy source and type-check
-FROM deps AS builder
+COPY packages/happy-server packages/happy-server
+COPY packages/happy-wire packages/happy-wire
+RUN pnpm --filter @slopus/happy-wire build
+ENV SKIP_HAPPY_WIRE_BUILD=
 
-COPY packages/happy-wire ./packages/happy-wire
-COPY packages/happy-server ./packages/happy-server
-
-RUN pnpm --filter @slopus/happy-wire --fail-if-no-match build
-RUN pnpm --filter happy-server --fail-if-no-match build
-
-# Stage 3: runtime
-FROM node:20-slim AS runner
-
-WORKDIR /repo
-
-RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
+# happy-server imports @octokit/webhooks (undeclared transitive of `octokit`);
+# filtered install doesn't hoist it or its deps into the package's node_modules — copy the family
+RUN mkdir -p packages/happy-server/node_modules/@octokit/webhooks packages/happy-server/node_modules/@octokit/webhooks-methods packages/happy-server/node_modules/@octokit/openapi-webhooks-types packages/happy-server/node_modules/@octokit/request-error && \
+    cp -rL node_modules/.pnpm/@octokit+webhooks@14.2.0/node_modules/@octokit/webhooks/. packages/happy-server/node_modules/@octokit/webhooks/ && \
+    cp -rL node_modules/.pnpm/@octokit+webhooks-methods@6.0.0/node_modules/@octokit/webhooks-methods/. packages/happy-server/node_modules/@octokit/webhooks-methods/ && \
+    cp -rL node_modules/.pnpm/@octokit+openapi-webhooks-types@12.1.0/node_modules/@octokit/openapi-webhooks-types/. packages/happy-server/node_modules/@octokit/openapi-webhooks-types/ && \
+    cp -rL node_modules/.pnpm/@octokit+request-error@7.1.0/node_modules/@octokit/request-error/. packages/happy-server/node_modules/@octokit/request-error/
 
 ENV NODE_ENV=production
-ENV DATA_DIR=/data
-ENV PGLITE_DIR=/data/pglite
 
-COPY --from=builder /repo/node_modules /repo/node_modules
-COPY --from=builder /repo/packages/happy-wire /repo/packages/happy-wire
-COPY --from=builder /repo/packages/happy-server /repo/packages/happy-server
-
-VOLUME /data
+WORKDIR /app/packages/happy-server
 EXPOSE 3005
-
-WORKDIR /repo/packages/happy-server
-
-CMD ["sh", "-c", "../../node_modules/.bin/tsx sources/standalone.ts migrate && exec ../../node_modules/.bin/tsx sources/standalone.ts serve"]
+CMD ["pnpm", "start"]

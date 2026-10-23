@@ -1,4 +1,5 @@
 import { getMetricsLabelsFromSocket, sessionAliveEventsCounter, websocketEventsCounter } from "@/app/monitoring/metrics2";
+import { notifySessionEnd, notifyThinkingChange } from "@/app/push/turnEndPush";
 import { activityCache } from "@/app/presence/sessionCache";
 import { buildNewMessageUpdate, buildSessionActivityEphemeral, buildUpdateSessionUpdate, ClientConnection, eventRouter } from "@/app/events/eventRouter";
 import { db } from "@/storage/db";
@@ -162,6 +163,9 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
 
             const { sid, thinking } = data;
 
+            // Push notification on busy -> idle transition
+            notifyThinkingChange(userId, sid, thinking || false);
+
             // Check session validity using cache
             const isValid = await activityCache.isSessionValid(sid, userId);
             if (!isValid) {
@@ -277,6 +281,9 @@ export function sessionUpdateHandler(userId: string, socket: Socket, connection:
                 where: { id: sid },
                 data: { lastActiveAt: new Date(t), active: false }
             });
+
+            // Push notification: session exited
+            notifySessionEnd(userId, sid);
 
             // Emit session activity update
             const sessionActivity = buildSessionActivityEphemeral(sid, false, t, false);
