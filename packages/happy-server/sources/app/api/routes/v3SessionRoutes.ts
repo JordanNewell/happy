@@ -1,4 +1,5 @@
 import { buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
+import { clearBadgeForUser, noteMessageActivity } from "@/app/push/turnEndPush";
 import { db } from "@/storage/db";
 import { allocateSessionSeqBatch, allocateUserSeq } from "@/storage/seq";
 import { randomKeyNaked } from "@/utils/randomKeyNaked";
@@ -87,6 +88,12 @@ export function v3SessionRoutes(app: Fastify) {
             return reply.code(404).send({ error: 'Session not found' });
         }
 
+        // iOS client fetched messages — user is looking at the app, clear badge
+        const clientHeader = (request.headers['x-happy-client'] as string | undefined) ?? '';
+        if (clientHeader.startsWith('ios')) {
+            void clearBadgeForUser(userId);
+        }
+
         // Backward direction is opt-in via `before_seq`; everything else (no
         // params, or explicit `after_seq`) keeps the legacy forward semantics.
         const isBackward = before_seq !== undefined;
@@ -144,6 +151,10 @@ export function v3SessionRoutes(app: Fastify) {
         if (!session) {
             return reply.code(404).send({ error: 'Session not found' });
         }
+
+        // Message activity marks the session as mid-turn; quiescence fires the
+        // turn-end push (see turnEndPush.ts)
+        noteMessageActivity(userId, sessionId);
 
         const firstMessageByLocalId = new Map<string, { localId: string; content: string }>();
         for (const message of messages) {
